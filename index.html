@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pacer Remote Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+  /* Layout: clinic remote-monitoring console. Status tiles, then the live EGM strip on ECG paper, alerts and episodes in a side column. */
+  :root {
+    --bg: #ffffff;
+    --surface: #f4f8f8;
+    --line: #dbe6e7;
+    --ink: #0e2a30;
+    --muted: #5a7378;
+    --accent: #00897b;          /* medical teal-green: brand, atrial channel */
+    --accent-soft: #e2f3f0;
+    --pace: #1f6feb;            /* pacing blue: AP, VP, lead events */
+    --pace-soft: #e6effd;
+    --grid-minor: #ebf4f3;      /* ECG paper, 40 ms boxes */
+    --grid-major: #cfe4e1;      /* ECG paper, 200 ms boxes */
+    --good: #1a9e5c; --good-soft: #e3f5ec;
+    --warn: #c77700; --warn-soft: #fdf1df;
+    --crit: #d7263d; --crit-soft: #fde8eb;
+    --font-sans: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b1416; --surface: #111d20; --line: #22353a; --ink: #e3eff0; --muted: #8ea6ab;
+      --accent: #2bb5a4; --accent-soft: #12302c; --pace: #5b9bff; --pace-soft: #15253d;
+      --grid-minor: #102022; --grid-major: #1b3235;
+      --good: #3dd68c; --good-soft: #10291d; --warn: #ffb547; --warn-soft: #2d230f; --crit: #ff5c6f; --crit-soft: #33151a;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b1416; --surface: #111d20; --line: #22353a; --ink: #e3eff0; --muted: #8ea6ab;
+    --accent: #2bb5a4; --accent-soft: #12302c; --pace: #5b9bff; --pace-soft: #15253d;
+    --grid-minor: #102022; --grid-major: #1b3235;
+    --good: #3dd68c; --good-soft: #10291d; --warn: #ffb547; --warn-soft: #2d230f; --crit: #ff5c6f; --crit-soft: #33151a;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--font-sans); }
+  .wrap { max-width: 1320px; margin: 0 auto; padding-block: 0 32px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding-block: 18px; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand svg { color: var(--accent); flex: none; }
+  .brand h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: .1px; }
+  .brand small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+  .spacer { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 99px; background: var(--surface); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.live { background: var(--good-soft); color: var(--good); border-color: transparent; }
+  .pill.crit { background: var(--crit-soft); color: var(--crit); border-color: transparent; }
+  .pill.info { background: var(--pace-soft); color: var(--pace); border-color: transparent; }
+  .pill.ok { background: var(--good-soft); color: var(--good); border-color: transparent; }
+
+  button { font: 500 14px var(--font-sans); border-radius: 8px; padding: 8px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  button:hover { background: var(--surface); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.06); background: var(--accent); }
+  button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--pace); outline-offset: 2px; }
+
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; margin-top: 20px; }
+  @media (max-width: 980px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+
+  .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  @media (max-width: 640px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .tile { padding: 14px 16px; border-right: 1px solid var(--line); min-width: 0; }
+  .tile:last-child { border-right: 0; }
+  @media (max-width: 640px) { .tile:nth-child(2) { border-right: 0; } .tile:nth-child(-n+2) { border-bottom: 1px solid var(--line); } }
+  .k { color: var(--muted); font-size: 11.5px; font-weight: 500; text-transform: uppercase; letter-spacing: .7px; }
+  .v { font: 500 30px/1.15 var(--font-mono); font-variant-numeric: tabular-nums; margin-top: 4px; }
+  .v .u { font: 400 13px var(--font-sans); color: var(--muted); margin-left: 4px; }
+  .s { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .monitor { margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .monitor-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .monitor-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .monitor-head .scale { color: var(--muted); font: 12px var(--font-mono); }
+  canvas#ecg { display: block; width: 100%; height: 380px; background: var(--bg); }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; padding: 10px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  .sw { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 6px; }
+  details { border-top: 1px solid var(--line); }
+  summary { cursor: pointer; padding: 10px 16px; color: var(--muted); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .7px; }
+  #log { margin: 0; padding: 0 16px 12px; font: 12px/1.6 var(--font-mono); color: var(--muted); max-height: 180px; overflow: auto; white-space: pre; }
+
+  aside { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--bg); }
+  .card h2 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+  .note { color: var(--muted); font-size: 12.5px; margin: 0; }
+  .row { display: flex; gap: 8px; margin: 12px 0; }
+  input { flex: 1; min-width: 0; font: 13px var(--font-mono); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .qr-wrap { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
+  #qr { background: #fff; padding: 6px; border-radius: 8px; border: 1px solid var(--line); flex: none; }
+  #qr:empty { display: none; }
+  #episodes { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+  .episode { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--surface); }
+  .ep-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .ep-time { color: var(--muted); font: 12px var(--font-mono); }
+  .ep-title { font-weight: 600; margin-top: 6px; }
+  .ep-msg { color: var(--muted); font-size: 12.5px; }
+  .episode img { width: 100%; display: block; margin-top: 8px; border-radius: 6px; border: 1px solid var(--line); }
+  .empty { color: var(--muted); font-size: 12.5px; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; }
+  .ctl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+  .tog { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px; text-align: left; }
+  .tog .tl { font-size: 13px; font-weight: 600; }
+  .tog:disabled { opacity: .45; cursor: not-allowed; }
+  .speed { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+  .speed .tl { font-size: 13px; font-weight: 600; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 6px 12px; font: 500 13px var(--font-mono); }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .seg button:disabled { opacity: .45; cursor: not-allowed; }
+  .ctl-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+  .linkbtn { border: 0; background: none; padding: 4px 0; color: var(--pace); font-size: 12.5px; }
+  .linkbtn:hover { background: none; text-decoration: underline; }
+  .scene { margin-top: 12px; padding: 12px; border-radius: 10px; background: var(--accent-soft); }
+  .scene-k { font-size: 11px; font-weight: 600; letter-spacing: .7px; text-transform: uppercase; color: var(--accent); }
+  .scene-t { font-weight: 600; margin: 2px 0 4px; }
+  .scene p { color: var(--ink); font-size: 12.5px; margin: 0; }
+  .order { margin: 12px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; }
+  .order li { margin-bottom: 2px; }
+  .chk { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink); margin-top: 4px; }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect x="1" y="1" width="28" height="28" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><polyline points="4,16 10,16 12,11 15,21 18,8 20,16 26,16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <div><h1>Pacer Remote Monitor</h1><small>DDD demo · 3rd-degree AV block</small></div>
+    </div>
+    <span class="pill" id="srcPill">Not connected</span>
+    <span class="spacer"></span>
+    <button id="btnSim">Run simulator</button>
+    <button class="primary" id="btnConnect">Connect Arduino</button>
+  </header>
+
+  <div class="grid">
+    <section style="min-width:0">
+      <div class="tiles">
+        <div class="tile"><div class="k">Ventricular rate</div><div class="v"><span id="vRate">--</span><span class="u">bpm</span></div><div class="s">last R-R interval</div></div>
+        <div class="tile"><div class="k">Atrial rate</div><div class="v"><span id="aRate">--</span><span class="u">bpm</span></div><div class="s">last P-P interval</div></div>
+        <div class="tile"><div class="k">V pacing</div><div class="v"><span id="vpPct">--</span><span class="u">%</span></div><div class="s">of last 10 ventricular beats</div></div>
+        <div class="tile"><div class="k">Capture</div><div class="v" style="font-size:20px;margin-top:10px"><span class="pill" id="capture">No pacing yet</span></div><div class="s" id="lastEvt">waiting for events</div></div>
+      </div>
+
+      <div class="monitor">
+        <div class="monitor-head">
+          <h2>Live EGM</h2>
+          <span class="scale" id="scaleLbl">6 s sweep · major grid 200 ms · minor 40 ms</span>
+        </div>
+        <canvas id="ecg" aria-label="Live atrial and ventricular electrograms with marker channel"></canvas>
+        <div class="legend">
+          <span><span class="sw" style="background:var(--accent)"></span>Atrial EGM</span>
+          <span><span class="sw" style="background:var(--ink)"></span>Ventricular EGM</span>
+          <span><span class="sw" style="background:var(--pace)"></span>Pacing (AP, VP)</span>
+          <span><span class="sw" style="background:var(--crit)"></span>Loss of capture</span>
+        </div>
+        <details>
+          <summary>Event log</summary>
+          <pre id="log"></pre>
+        </details>
+      </div>
+    </section>
+
+    <aside>
+      <div class="card">
+        <h2>Demo controls</h2>
+        <p class="note" id="ctlHint">Connect the Arduino or start the simulator, then switch scenes here.</p>
+        <div class="ctl">
+          <button class="tog" id="tBlock" disabled><span class="tl">AV block</span><span class="pill" id="sBlock">Off</span></button>
+          <button class="tog" id="tPacer" disabled><span class="tl">Pacemaker</span><span class="pill" id="sPacer">On</span></button>
+          <button class="tog" id="tFault" disabled><span class="tl">Lead fault</span><span class="pill" id="sFault">Off</span></button>
+        </div>
+        <div class="speed"><span class="tl">Speed</span>
+          <div class="seg" id="speedSeg"><button data-k="1" class="on" disabled>1×</button><button data-k="2" disabled>½×</button><button data-k="4" disabled>¼×</button></div>
+        </div>
+        <div class="ctl-foot"><button class="linkbtn" id="btnReset" disabled>Reset to normal rhythm</button></div>
+        <div class="scene">
+          <div class="scene-k">Now showing</div>
+          <div class="scene-t" id="sceneT">Waiting for a source</div>
+          <p id="sceneD">Connect the Arduino or start the simulator.</p>
+        </div>
+        <ol class="order">
+          <li>Pacemaker off, then AV block on: the ventricles slow to about 35 bpm.</li>
+          <li>Pacemaker on: a pace follows every P wave and the rate returns to 75 bpm.</li>
+          <li>Lead fault on: paces stop capturing and an alert goes out.</li>
+          <li>Reset to normal rhythm.</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h2>Phone alerts</h2>
+        <p class="note">Subscribe to this topic in the free ntfy app to get lock-screen alerts.</p>
+        <div class="row">
+          <input id="topic" aria-label="ntfy topic">
+          <button id="btnTest">Send test</button>
+        </div>
+        <label class="chk"><input type="checkbox" id="sendPush" checked style="flex:none;width:auto"> Send alerts to the phone</label>
+        <div class="qr-wrap">
+          <div id="qr"></div>
+          <p class="note">Or scan to open the phone view. Alerts post to <span style="font-family:var(--font-mono)">ntfy.sh/<span id="topicEcho"></span></span>.</p>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Episodes</h2>
+        <p class="note">Each alert stores the 6 s EGM strip from the moment it fired.</p>
+        <div id="episodes"><div class="empty">No episodes yet. Connect the Arduino or start the simulator.</div></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+// ---------------- Config ----------------
+const RULES = {
+  bradyBpm: 40,          // ventricular rate below this, two intervals in a row -> alert
+  pacingPct: 80,         // >= this % of last 10 V beats paced -> pacing episode
+  throttleMs: 20000,     // minimum gap between two alerts of the same kind
+};
+const WINDOW_MS = 6000;  // visible sweep on the monitor
+
+// ---------------- State ----------------
+const events = [];       // {t, kind}: A, Ap, Vc, Ve, Vp, spike, loc
+const vBeats = [];       // {t, paced}
+const aBeats = [];
+const lastAlertAt = {};
+let pacingEpisodeOpen = false;
+let slow = 1;            // slow-motion factor reported by the source (1, 2 or 4)
+
+const $ = id => document.getElementById(id);
+const logEl = $('log');
+function logLine(s) {
+  logEl.textContent += s + '\n';
+  const lines = logEl.textContent.split('\n');
+  if (lines.length > 200) logEl.textContent = lines.slice(-200).join('\n');
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function setPill(el, cls, text) { el.className = 'pill' + (cls ? ' ' + cls : ''); el.textContent = text; }
+
+// ---------------- Topic + QR ----------------
+function loadTopic() {
+  let t = null;
+  try { t = localStorage.getItem('pacerTopic'); } catch (e) {}
+  return t || 'pacer-demo-' + Math.random().toString(36).slice(2, 8);
+}
+function setTopic(t) {
+  $('topic').value = t; $('topicEcho').textContent = t;
+  try { localStorage.setItem('pacerTopic', t); } catch (e) {}
+  $('qr').innerHTML = '';
+  const phoneUrl = new URL('phone.html?t=' + encodeURIComponent(t), location.href).href;
+  if (window.QRCode) new QRCode($('qr'), { text: phoneUrl, width: 96, height: 96 });
+}
+setTopic(loadTopic());
+$('topic').addEventListener('change', e => setTopic(e.target.value.trim() || loadTopic()));
+
+// ---------------- ntfy push ----------------
+async function push(title, message, priority, tags) {
+  if (!$('sendPush').checked) { logLine('push skipped (phone alerts off): ' + title); return; }
+  const topic = $('topic').value.trim();
+  try {
+    await fetch('https://ntfy.sh/' + encodeURIComponent(topic), {
+      method: 'POST', body: message,
+      headers: { 'Title': title, 'Priority': String(priority), 'Tags': tags }
+    });
+    logLine('push sent: ' + title);
+  } catch (e) { logLine('push failed: ' + e.message); }
+}
+$('btnTest').onclick = () => push('Pacer monitor test', 'Phone alerts are working.', 3, 'white_check_mark');
+
+// ---------------- Episodes ----------------
+function snapshot() { try { return canvas.toDataURL('image/png'); } catch (e) { return null; } }
+function episode(kind, level, title, msg, priority, tags) {
+  const now = performance.now();
+  if (lastAlertAt[kind] && now - lastAlertAt[kind] < RULES.throttleMs) return;
+  lastAlertAt[kind] = now;
+  const box = $('episodes');
+  const empty = box.querySelector('.empty'); if (empty) empty.remove();
+  const el = document.createElement('div');
+  el.className = 'episode';
+  el.innerHTML = '<div class="ep-top"><span class="pill"></span><span class="ep-time"></span></div><div class="ep-title"></div><div class="ep-msg"></div>';
+  setPill(el.querySelector('.pill'), level === 'crit' ? 'crit' : 'info', level === 'crit' ? 'Urgent' : 'Episode');
+  el.querySelector('.ep-time').textContent = new Date().toLocaleTimeString();
+  el.querySelector('.ep-title').textContent = title;
+  el.querySelector('.ep-msg').textContent = msg;
+  const img = snapshot();
+  if (img) { const im = document.createElement('img'); im.alt = 'Stored EGM strip'; im.src = img; el.appendChild(im); }
+  box.prepend(el);
+  push(title, msg + ' EGM strip saved on the monitor.', priority, tags);
+}
+
+// ---------------- Event handling ----------------
+function rateOf(list) {
+  if (list.length < 2) return null;
+  return Math.round(60000 * slow / (list.at(-1).t - list.at(-2).t));
+}
+function vBeat(t, paced) {
+  vBeats.push({ t, paced }); if (vBeats.length > 20) vBeats.shift();
+  const r = rateOf(vBeats);
+  $('vRate').textContent = r ?? '--';
+  $('vRate').style.color = r !== null && r < RULES.bradyBpm ? 'var(--crit)' : '';
+  const last10 = vBeats.slice(-10);
+  const pct = Math.round(100 * last10.filter(b => b.paced).length / last10.length);
+  $('vpPct').textContent = pct;
+  if (vBeats.length >= 3) {
+    const d1 = vBeats.at(-1).t - vBeats.at(-2).t, d2 = vBeats.at(-2).t - vBeats.at(-3).t;
+    if (60000 * slow / d1 < RULES.bradyBpm && 60000 * slow / d2 < RULES.bradyBpm)
+      episode('brady', 'crit', 'Bradycardia: ventricular rate ' + Math.round(60000 * slow / d1) + ' bpm',
+              'P waves continue but the ventricles are not following (AV dissociation).', 5, 'rotating_light');
+  }
+  if (last10.length >= 8 && pct >= RULES.pacingPct && !pacingEpisodeOpen) {
+    pacingEpisodeOpen = true;
+    episode('pacing', 'info', 'AV conduction loss, V pacing ' + pct + '%',
+            'The pacemaker is tracking the atrium and pacing the ventricle (AS to VP).', 3, 'heart');
+  }
+  if (!paced && last10.filter(b => b.paced).length === 0) pacingEpisodeOpen = false;
+}
+function aBeat(t) {
+  aBeats.push({ t }); if (aBeats.length > 20) aBeats.shift();
+  $('aRate').textContent = rateOf(aBeats) ?? '--';
+}
+function setCapture(ok) { setPill($('capture'), ok ? 'ok' : 'crit', ok ? 'Captured' : 'Lost'); }
+
+function handleLine(raw) {
+  const line = raw.trim();
+  if (!line) return;
+  logLine(line);
+  const m = line.match(/^\d+\s+ms\s+(.*)$/);
+  const msg = m ? m[1] : line;
+  const t = performance.now();
+  const ev = k => events.push({ t, kind: k });
+  if (msg === 'AS') { ev('A'); aBeat(t); }
+  else if (msg === 'AP') { ev('Ap'); aBeat(t); }
+  else if (msg.startsWith('VS (conducted)')) { ev('Vc'); vBeat(t, false); }
+  else if (msg.startsWith('VS (escape)')) { ev('Ve'); vBeat(t, false); }
+  else if (msg.startsWith('VP') && msg.includes('captured')) { ev('spike'); ev('Vp'); vBeat(t, true); setCapture(true); }
+  else if (msg.startsWith('VP') && msg.includes('no capture')) { ev('spike'); setCapture(false); }
+  else if (msg.startsWith('VP')) { ev('spike'); }
+  else if (msg.startsWith('start:')) { setState({ block: false, pacer: true, fault: false }); setSpeed(1); }
+  else if (msg.startsWith('== SPEED x')) setSpeed(parseInt(msg.slice(10), 10) || 1);
+  else if (msg.startsWith('== AV BLOCK ON')) setState({ block: true });
+  else if (msg.startsWith('== AV block off')) setState({ block: false });
+  else if (msg === '== PACER ON') setState({ pacer: true });
+  else if (msg === '== PACER OFF') setState({ pacer: false });
+  else if (msg.startsWith('== FAULT')) setState({ fault: true });
+  else if (msg.startsWith('== fault cleared')) setState({ fault: false });
+  else if (msg.includes('ALERT: loss of capture')) {
+    ev('loc');
+    episode('loc', 'crit', 'Loss of capture detected',
+            'A ventricular pace was delivered without capture. Check lead position and output.', 5, 'warning');
+  }
+  $('lastEvt').textContent = msg;
+  while (events.length && t - events[0].t > WINDOW_MS * slow + 1000) events.shift();
+}
+
+// ---------------- Web Serial ----------------
+$('btnConnect').onclick = async () => {
+  if (!('serial' in navigator)) { logLine('Web Serial needs desktop Chrome or Edge, opened over https (Vercel) or localhost.'); setPill($('srcPill'), 'crit', 'Use desktop Chrome'); return; }
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    stopSim();
+    writer = port.writable.getWriter();
+    setSource('serial');
+    setPill($('srcPill'), 'live', 'Arduino connected');
+    const dec = new TextDecoderStream();
+    port.readable.pipeTo(dec.writable);
+    const reader = dec.readable.getReader();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
+    }
+    setSource(null); setPill($('srcPill'), '', 'Not connected');
+  } catch (e) { logLine('serial: ' + e.message); setSource(null); setPill($('srcPill'), '', 'Not connected'); }
+};
+
+// ---------------- Demo controls ----------------
+// Same three switches as the Arduino buttons. With the Arduino connected they send
+// b / p / f over USB; in simulator mode they drive the browser copy of the sketch.
+const state = { block: false, pacer: true, fault: false };
+let source = null, writer = null, sim = null;
+function setSource(src) {
+  source = src;
+  ['tBlock', 'tPacer', 'tFault', 'btnReset'].forEach(id => $(id).disabled = !src);
+  document.querySelectorAll('#speedSeg button').forEach(b => b.disabled = !src);
+  $('ctlHint').textContent = src === 'serial' ? 'Switches send commands to the Arduino over USB.'
+    : src === 'sim' ? 'Simulator running in the browser. No hardware needed.'
+    : 'Connect the Arduino or start the simulator, then switch scenes here.';
+  renderState();
+}
+function setState(patch) { Object.assign(state, patch); renderState(); }
+function setSpeed(k) {
+  slow = [1, 2, 4].includes(k) ? k : 1;
+  document.querySelectorAll('#speedSeg button').forEach(b => b.classList.toggle('on', +b.dataset.k === slow));
+  $('scaleLbl').textContent = '6 s sweep · major grid 200 ms · minor 40 ms' + (slow > 1 ? ' · slow motion ' + (slow === 2 ? '½×' : '¼×') + ', rates shown in real-time bpm' : '');
+}
+document.querySelectorAll('#speedSeg button').forEach(b => b.onclick = () => sendKey(b.dataset.k));
+function scene() {
+  if (!source) return ['Waiting for a source', 'Connect the Arduino or start the simulator.'];
+  if (!state.block) return state.fault && state.pacer
+    ? ['Normal rhythm, fault armed', 'The heart conducts on its own, so the pacemaker never paces and the lead fault stays hidden. Turn on AV block to expose it.']
+    : ['Normal rhythm', 'Each P wave reaches the ventricles 160 ms later (AS then VS). The pacemaker only watches and never fires.'];
+  if (!state.pacer) return ['Complete AV block, no pacemaker', 'P waves continue at 75 bpm but none reach the ventricles. Only a slow escape rhythm of about 35 bpm is left, with wide QRS complexes out of step with the P waves.'];
+  if (state.fault) return ['Loss of capture', 'The pacemaker still fires 200 ms after each P wave (VP), but the ventricle does not respond. Only escape beats remain, and a loss-of-capture alert goes out.'];
+  return ['Pacemaker tracking the atrium', 'Each sensed P wave (AS) is followed 200 ms later by a ventricular pace (VP) and a wide paced QRS. The ventricular rate is back to 75 bpm.'];
+}
+function renderState() {
+  setPill($('sBlock'), state.block ? 'crit' : '', state.block ? 'On' : 'Off');
+  setPill($('sPacer'), state.pacer ? 'live' : '', state.pacer ? 'On' : 'Off');
+  setPill($('sFault'), state.fault ? 'crit' : '', state.fault ? 'On' : 'Off');
+  const [t, d] = scene(); $('sceneT').textContent = t; $('sceneD').textContent = d;
+}
+async function sendKey(k) {
+  if (source === 'serial' && writer) { try { await writer.write(new TextEncoder().encode(k)); } catch (e) { logLine('send failed: ' + e.message); } }
+  else if (source === 'sim' && sim) sim.key(k);
+}
+$('tBlock').onclick = () => sendKey('b');
+$('tPacer').onclick = () => sendKey('p');
+$('tFault').onclick = () => sendKey('f');
+$('btnReset').onclick = async () => {
+  const keys = (state.block ? 'b' : '') + (state.pacer ? '' : 'p') + (state.fault ? 'f' : '');
+  for (const k of keys) { await sendKey(k); await new Promise(r => setTimeout(r, 60)); }
+};
+
+// ---------------- Browser simulator (port of heart_sim_paper.ino, built-in pacer) ----------------
+const T = { SINUS: 800, PR: 160, ESC: 1700, AREF: 200, VREF: 300, SAV: 200, PAV: 200, LRI: 1000, PVARP: 250, ER: 80 };
+function makeSim() {
+  const s = { block: false, pacer: true, fault: false };
+  let sp = 1;   // slow-motion factor
+  const t0 = performance.now(), now = () => performance.now() - t0;
+  let nextSinus = 500, nextEscape = T.ESC, lastA = -1e9, lastV = -1e9, condPending = false, condAt = 0, captured = false;
+  const pm = { vpPending: false, vpAt: 0, lastAevt: 0, lastVevt: -1e9, checkLOC: false, vpTime: 0 };
+  const log = (n, m) => handleLine(Math.round(n) + ' ms  ' + m);
+  const senseA = n => { if (!s.pacer || n - pm.lastVevt < T.PVARP * sp) return; pm.lastAevt = n; pm.vpPending = true; pm.vpAt = n + T.SAV * sp; };
+  const senseV = n => { if (!s.pacer) return; pm.vpPending = false; pm.lastVevt = n; };
+  function atrial(paced, n) {
+    if (n - lastA < T.AREF * sp) return;
+    lastA = n; nextSinus = n + T.SINUS * sp;
+    if (!paced) { senseA(n); log(n, 'AS'); }
+    if (!s.block) { condPending = true; condAt = n + T.PR * sp; }
+  }
+  function ventricular(type, n) {
+    if (n - lastV < T.VREF * sp) return false;
+    lastV = n; nextEscape = n + T.ESC * sp; condPending = false;
+    if (type !== 'P') { senseV(n); log(n, type === 'C' ? 'VS (conducted)' : 'VS (escape)'); }
+    return true;
+  }
+  function paceV(n) {
+    if (s.fault) { log(n, 'VP  -> no capture'); return; }
+    if (ventricular('P', n)) { captured = true; log(n, 'VP  -> captured'); } else log(n, 'VP  -> ventricle refractory');
+  }
+  function tick() {
+    const n = now();
+    if (n >= nextSinus) { nextSinus = n + T.SINUS * sp; atrial(false, n); }
+    if (condPending && n >= condAt) { condPending = false; ventricular('C', n); }
+    if (n >= nextEscape && !ventricular('E', n)) nextEscape = n + T.ESC * sp;
+    if (!s.pacer) return;
+    if (pm.vpPending && n >= pm.vpAt) { pm.vpPending = false; pm.checkLOC = true; pm.vpTime = n; pm.lastVevt = n; captured = false; paceV(n); }
+    if (n >= pm.lastAevt + T.LRI * sp) { pm.lastAevt = n; log(n, 'AP'); atrial(true, n); pm.vpPending = true; pm.vpAt = n + T.PAV * sp; }
+    if (pm.checkLOC && n >= pm.vpTime + T.ER * sp) { pm.checkLOC = false; if (!captured) log(n, '!! ALERT: loss of capture'); }
+  }
+  function key(k) {
+    const n = now();
+    if (k === 'b') { s.block = !s.block; log(n, s.block ? '== AV BLOCK ON (3rd degree)' : '== AV block off'); }
+    if (k === 'p') { s.pacer = !s.pacer; pm.vpPending = false; pm.checkLOC = false; pm.lastAevt = n; log(n, s.pacer ? '== PACER ON' : '== PACER OFF'); }
+    if (k === '1' || k === '2' || k === '4') { sp = +k; handleLine('== SPEED x' + sp); }
+    if (k === 'f') { s.fault = !s.fault; log(n, s.fault ? '== FAULT: loss of capture' : '== fault cleared'); }
+  }
+  log(0, 'start: browser simulator');
+  const id = setInterval(tick, 4);
+  return { key, stop: () => clearInterval(id) };
+}
+function stopSim() { if (sim) { sim.stop(); sim = null; } }
+$('btnSim').onclick = () => {
+  if (source === 'serial') { logLine('Disconnect the Arduino (reload the page) before using the simulator.'); return; }
+  stopSim(); sim = makeSim(); setSource('sim');
+  setPill($('srcPill'), 'info', 'Simulator');
+};
+
+// ---------------- EGM synthesis (mirrors the Arduino templates) ----------------
+const g = (t, mu, s) => Math.exp(-0.5 * ((t - mu) / s) ** 2);
+function egm(now) {
+  let a = 0, v = 0;
+  for (const e of events) {
+    const t = (now - e.t) / slow;
+    if (t < 0 || t > 700) continue;
+    if (e.kind === 'A' || e.kind === 'Ap') { a += 1.5 * g(t, 40, 15); v += 0.3 * g(t, 40, 15); if (e.kind === 'Ap' && t < 6) a += 6; }
+    if (e.kind === 'spike' && t < 6) v += 12;
+    if (e.kind === 'Vc') { v += 10 * g(t, 30, 7) - 3 * g(t, 50, 7) + 1.5 * g(t, 280, 45); a += 0.4 * g(t, 45, 12); }
+    if (e.kind === 'Ve' || e.kind === 'Vp') { v += 7 * g(t, 60, 22) - 4 * g(t, 120, 25) - 1.5 * g(t, 330, 55); a += 0.4 * g(t, 45, 12); }
+  }
+  return { a, v };
+}
+
+// ---------------- Monitor drawing ----------------
+const canvas = $('ecg');
+const ctx = canvas.getContext('2d');
+function resize() {
+  const r = canvas.getBoundingClientRect(), d = devicePixelRatio || 1;
+  canvas.width = Math.round(r.width * d); canvas.height = Math.round(r.height * d); ctx.setTransform(d, 0, 0, d, 0, 0);
+}
+addEventListener('resize', resize); resize();
+function draw() {
+  const cs = getComputedStyle(document.documentElement);
+  const C = n => cs.getPropertyValue(n).trim();
+  const W = canvas.clientWidth, H = canvas.clientHeight, now = performance.now();
+  ctx.fillStyle = C('--bg'); ctx.fillRect(0, 0, W, H);
+  const pxPerMs = W / (WINDOW_MS * slow);
+  // ECG paper: minor 40 ms, major 200 ms; square boxes
+  const minor = 40 * slow * pxPerMs;
+  ctx.lineWidth = 1;
+  for (let i = 0; i * minor <= W; i++) {
+    ctx.strokeStyle = i % 5 === 0 ? C('--grid-major') : C('--grid-minor');
+    const x = W - i * minor; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let j = 0; j * minor <= H; j++) {
+    ctx.strokeStyle = j % 5 === 0 ? C('--grid-major') : C('--grid-minor');
+    const y = j * minor; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  const X = t => W - (now - t) * pxPerMs;
+  const markY = 46, locY = 86, aY = H * 0.46, vY = H * 0.8;
+  // channel labels
+  ctx.font = '500 11px "IBM Plex Sans", sans-serif'; ctx.fillStyle = C('--muted'); ctx.textAlign = 'left';
+  ctx.fillText('MARKERS', 10, 16); ctx.fillText('A  EGM', 10, aY - 30); ctx.fillText('V  EGM', 10, vY - 74);
+  // traces
+  const trace = (key, y0, scale, color, width) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = 'round'; ctx.beginPath();
+    for (let px = 0; px <= W; px++) {
+      const y = y0 - egm(now - (W - px) / pxPerMs)[key] * scale;
+      px ? ctx.lineTo(px, y) : ctx.moveTo(px, y);
+    }
+    ctx.stroke();
+  };
+  trace('a', aY, 14, C('--accent'), 1.6);
+  trace('v', vY, 6, C('--ink'), 1.6);
+  // marker channel
+  ctx.strokeStyle = C('--line'); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, markY); ctx.lineTo(W, markY); ctx.stroke();
+  ctx.font = '600 11px "IBM Plex Mono", monospace'; ctx.textAlign = 'center';
+  for (const e of events) {
+    const x = X(e.t); if (x < 0) continue;
+    if (e.kind === 'loc') { ctx.fillStyle = C('--crit'); ctx.fillText('LOC', x, locY); continue; }
+    let label = null, color = C('--muted'), up = true, paced = false;
+    if (e.kind === 'A') { label = 'AS'; color = C('--accent'); }
+    if (e.kind === 'Ap') { label = 'AP'; color = C('--pace'); paced = true; }
+    if (e.kind === 'Vc' || e.kind === 'Ve') { label = 'VS'; color = C('--ink'); up = false; }
+    if (e.kind === 'spike') { label = 'VP'; color = C('--pace'); up = false; paced = true; }
+    if (!label) continue;
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, markY); ctx.lineTo(x, up ? markY - 12 : markY + 12); ctx.stroke();
+    ctx.fillText(label, x, up ? markY - 17 : markY + 25);
+    if (paced) { ctx.globalAlpha = 0.35; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(x, markY + 32); ctx.lineTo(x, H); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; }
+  }
+  ctx.textAlign = 'left';
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+renderState();
+logLine('Ready. Connect the Arduino (sketch in SERIAL_PLOT 0 mode) or start the simulator.');
+</script>
+</body>
+</html>
