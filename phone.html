@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pacer Alerts</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: single column alert feed, newest first, severity as a pill. */
+  :root {
+    --bg: #ffffff; --surface: #f4f8f8; --line: #dbe6e7; --ink: #0e2a30; --muted: #5a7378;
+    --accent: #00897b; --pace: #1f6feb; --pace-soft: #e6effd; --good: #1a9e5c; --good-soft: #e3f5ec; --crit: #d7263d; --crit-soft: #fde8eb;
+    --font-sans: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif; --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #0b1416; --surface: #111d20; --line: #22353a; --ink: #e3eff0; --muted: #8ea6ab; --accent: #2bb5a4; --pace: #5b9bff; --pace-soft: #15253d; --good: #3dd68c; --good-soft: #10291d; --crit: #ff5c6f; --crit-soft: #33151a; color-scheme: dark; }
+  }
+  :root[data-theme="dark"] { --bg: #0b1416; --surface: #111d20; --line: #22353a; --ink: #e3eff0; --muted: #8ea6ab; --accent: #2bb5a4; --pace: #5b9bff; --pace-soft: #15253d; --good: #3dd68c; --good-soft: #10291d; --crit: #ff5c6f; --crit-soft: #33151a; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font-sans); padding-block: 20px 32px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .head { display: flex; align-items: center; gap: 10px; }
+  .head svg { color: var(--accent); flex: none; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0; }
+  .muted { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  .mono { font-family: var(--font-mono); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 99px; background: var(--surface); color: var(--muted); border: 1px solid var(--line); }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.live { background: var(--good-soft); color: var(--good); border-color: transparent; }
+  .pill.crit { background: var(--crit-soft); color: var(--crit); border-color: transparent; }
+  .pill.info { background: var(--pace-soft); color: var(--pace); border-color: transparent; }
+  .status { margin: 14px 0 18px; }
+  #list { display: flex; flex-direction: column; gap: 10px; }
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--bg); }
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .time { color: var(--muted); font: 12px var(--font-mono); }
+  .title { font-weight: 600; margin-top: 6px; }
+  .msg { color: var(--muted); font-size: 13.5px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 14px; border: 1px dashed var(--line); border-radius: 12px; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <svg width="28" height="28" viewBox="0 0 30 30" aria-hidden="true"><rect x="1" y="1" width="28" height="28" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><polyline points="4,16 10,16 12,11 15,21 18,8 20,16 26,16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <h1>Pacer Alerts</h1>
+  </div>
+  <p class="muted">Topic <span class="mono" id="topic"></span>. For lock-screen notifications, subscribe to this topic in the ntfy app.</p>
+  <div class="status"><span class="pill" id="state">Connecting</span></div>
+  <div id="list"><div class="empty">No alerts yet. Keep this page open during the demo.</div></div>
+<script>
+  const topic = new URLSearchParams(location.search).get('t') || 'pacer-demo';
+  document.getElementById('topic').textContent = topic;
+  const list = document.getElementById('list'), state = document.getElementById('state');
+  const pill = (el, cls, text) => { el.className = 'pill' + (cls ? ' ' + cls : ''); el.textContent = text; };
+  const es = new EventSource('https://ntfy.sh/' + encodeURIComponent(topic) + '/sse');
+  es.onopen = () => pill(state, 'live', 'Live');
+  es.onerror = () => pill(state, '', 'Reconnecting');
+  es.onmessage = ev => {
+    let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+    if (d.event !== 'message') return;
+    const empty = list.querySelector('.empty'); if (empty) empty.remove();
+    const urgent = (d.priority || 3) >= 5;
+    const c = document.createElement('div');
+    c.className = 'card';
+    c.innerHTML = '<div class="top"><span class="pill"></span><span class="time"></span></div><div class="title"></div><div class="msg"></div>';
+    pill(c.querySelector('.pill'), urgent ? 'crit' : 'info', urgent ? 'Urgent' : 'Episode');
+    c.querySelector('.time').textContent = new Date(d.time * 1000).toLocaleTimeString();
+    c.querySelector('.title').textContent = d.title || 'Alert';
+    c.querySelector('.msg').textContent = d.message || '';
+    list.prepend(c);
+    if (navigator.vibrate && urgent) navigator.vibrate([200, 100, 200]);
+  };
+</script>
+</body>
+</html>
